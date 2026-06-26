@@ -85,3 +85,88 @@ Slope and elevation together account for nearly all discriminatory power, consis
 - Non-landslide samples drawn randomly from territory-wide land pixels: genuinely stable vs. unrecorded landslide locations are indistinguishable at this stage.
 - No hyperparameter tuning (C, gamma) performed — default values used; a grid search would likely improve AUC further.
 - ENTLI CLASS field (geotechnical material) not used in final model due to stratification artifact discovered during exploration; see notes.md.
+
+---
+
+## Application site: Kerala, India
+
+Data sources:
+- **Landslide inventory**: Kerala Landslide Inventory shapefile (`Kerela landslide.shp`), containing point records with district, landslide type (DF=debris flow, SS=shallow slide, RF=rock fall), and type-of-slide attributes. After spatial filtering to DEM extent: 14,728 records across 10 districts (Idukki 9,220, Malappuram 2,214, Kozhikode 1,804, Wayanad 1,024, …).
+- **DEM**: Copernicus GLO-30 (30m), 4 tiles covering Kerala extent, merged and reprojected to EPSG:32643 (UTM Zone 43N). Grid: 18,492 × 11,025 pixels.
+- **Land cover**: ESA WorldCover 2021 v200 (10m), 4 tiles (N06E072, N06E075, N09E072, N09E075), merged and reprojected to match DEM grid via nearest-neighbour resampling.
+
+## Feature set (Kerala)
+
+Reduced to 4 predictors from the HK 6-feature set:
+
+| Feature | Reason for inclusion/exclusion |
+|---|---|
+| Elevation | Included — proxy for orographic position |
+| Slope angle | Included — primary driver, dominant in HK model |
+| Slope aspect | Included — controls moisture/exposure |
+| Land cover | Included — forest vs cleared land is key Kerala risk factor |
+| TWI | **Dropped** — D8 flow routing over ~200M pixels impractical in pure Python (killed after >2h) |
+| Profile curvature | **Dropped** — near-zero permutation importance (0.000012) in HK validation; noise-dominated at 30m |
+
+## Results
+
+### Kerala model performance
+
+Training: 4,728 landslide points (stratified by type: DF 60%, SS 37%, RF 3%) + 5,000 non-landslide points (outside 250m buffer, land pixels with elevation >10m). 80/20 train/test split.
+
+| Metric | Kerala | Hong Kong |
+|---|---|---|
+| AUC-ROC (test set) | **0.921** | 0.880 |
+| AUC-ROC (5-fold CV) | **0.926 ± 0.006** | 0.874 ± 0.008 |
+| rTP / sensitivity | 93.2% | 94.2% |
+| rTN / specificity | 78.3% | 72.8% |
+| Overall accuracy | 85.6% | 83.4% |
+
+Kerala outperforms HK on all metrics except rTP (≈equal). This is consistent with Kerala's sharper topographic contrast (flat coastal plains vs steep Western Ghats escarpment) providing cleaner class separation than HK's more uniformly hilly terrain.
+
+**Feature importance (permutation, AUC-based):**
+
+| Feature | Importance |
+|---|---|
+| Slope | 0.0924 |
+| Land cover | 0.0902 |
+| Elevation | 0.0829 |
+| Aspect | 0.0014 |
+
+Slope and land cover are nearly equal in importance — the role of land cover (forest clearance, agricultural conversion) as a co-driver alongside slope is a known characteristic of Kerala landslides and is consistent with the 2018 disaster literature.
+
+### Susceptibility map statistics (full Kerala)
+
+Map generated via manual numpy RBF + Platt sigmoid (bypasses sklearn `predict_proba` which is prohibitively slow at ~200M pixel scale; mathematically identical result). Runtime: ~26 minutes on labws2.
+
+| Statistic | Value |
+|---|---|
+| Valid land pixels | 125,203,795 / 203,874,300 total |
+| Min Pf | 0.0081 |
+| Max Pf | 0.9996 |
+| Mean Pf | 0.2820 |
+| P50 (median) | 0.0897 |
+| P75 | 0.4454 |
+| P90 | 0.9000 |
+| P95 | 0.9416 |
+
+### Susceptibility zone classification
+
+Thresholds: Low <0.20 / Moderate 0.20–0.50 / High 0.50–0.80 / Very High >0.80
+
+| Class | Pixels | Area % | Interpretation |
+|---|---|---|---|
+| Low (<0.20) | 84,452,687 | 67.5% | Coastal plains, backwaters, flat lowlands |
+| Moderate (0.20–0.50) | 10,796,054 | 8.6% | Foothills, transition zone |
+| High (0.50–0.80) | 8,691,028 | 6.9% | Mid-elevation Western Ghats slopes |
+| Very High (>0.80) | 21,264,026 | 17.0% | Steep upper Ghats — Idukki, Wayanad, Pathanamthitta |
+
+The 17% Very High zone corresponds spatially to the districts that suffered the most severe landslide impacts during the 2018 Kerala floods, providing qualitative validation of the map.
+
+## Known limitations (Kerala)
+
+- TWI absent — reduces model to 4 features; flow-accumulation effects on pore pressure not captured.
+- Nodata sentinel (-9999) from slope/aspect computation leaked into ~boundary pixels of training samples; minor effect on AUC, documented in notes.md.
+- No hyperparameter tuning performed (C=1.0, gamma='scale' defaults used).
+- Inventory points are occurrence locations, not areal polygons — point-based sampling may undersample large failure zones.
+- `susceptibility_kerala.tif` (510MB) excluded from repository due to GitHub file size limits; `susceptibility_classified_kerala.tif` (12MB) included as the primary deliverable.

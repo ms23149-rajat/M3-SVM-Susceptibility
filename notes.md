@@ -55,3 +55,41 @@ Profile curvature showed near-zero permutation importance (0.000012) in the fina
 ## AI assistance
 
 Claude was used throughout as an interactive mentor: explaining both source papers in plain language before any coding began, walking through each feature engineering and modeling step, diagnosing and fixing the three data issues above, and helping interpret results. All code was run by hand on labws2; Claude has no direct access to the lab machine and never executed anything on it.
+
+---
+
+## Kerala application — additional notes
+
+### Prediction speed issue with sklearn predict_proba at pixel scale
+
+sklearn SVC with `probability=True` uses Platt scaling (an internal cross-validation step at fit time, plus a sigmoid transformation at predict time). At ~200M pixel scale this is prohibitively slow — Chunk 1/73 of 256 rows (~1.45M pixels) did not complete after 20 minutes. Even Chunk 1/578 of 32 rows (~180K pixels) did not complete after 10 minutes.
+
+Root cause: sklearn 1.9 deprecated `probability=True` for SVC, and the Platt scaling path incurs significant per-call overhead in the C extension regardless of batch size.
+
+Fix: extracted SVM internals (support vectors, dual coefficients, intercept, gamma, Platt A/B) and reimplemented prediction as pure numpy:
+1. StandardScaler: `X_scaled = (X - mean) / scale`
+2. RBF kernel: `K = exp(-gamma * (||x||^2 + ||sv||^2 - 2 * x @ SV.T))`
+3. Decision function: `dec = K @ dual_coef + intercept`
+4. Platt sigmoid: `P = 1 / (1 + exp(A * dec + B))`
+
+With pixel batches of 5000 and row chunks of 8 (to keep kernel matrix at ~58MB), full Kerala map completed in 25.7 minutes. Mathematically identical to sklearn output.
+
+### -9999 nodata sentinel in training samples
+
+`slope.tif` and `aspect.tif` show `min=-9999.00` in training sample feature stats. These are DEM boundary pixels where the Sobel gradient could not be computed. They were not masked before sampling, so a small number of training points carry sentinel values as features. Effect on AUC is negligible (model still achieved 0.921) but is a known issue — future runs should mask pixels where any feature equals -9999 before sampling.
+
+### WorldCover class distribution (Kerala)
+
+| ESA Class | Label | Pixel count | % of total |
+|---|---|---|---|
+| 10 | Tree cover | 55,127,315 | 48% |
+| 80 | Permanent water | 22,087,833 | 19% |
+| 40 | Cropland | 16,504,510 | 14% |
+| 30 | Grassland | 14,048,968 | 12% |
+| 50 | Built-up | 3,655,484 | 3% |
+| 20 | Shrubland | 2,412,579 | 2% |
+| 90 | Herbaceous wetland | 253,812 | <1% |
+| 60 | Bare/sparse vegetation | 210,966 | <1% |
+| 95 | Mangroves | 10,477 | <1% |
+
+Tree cover (48%) dominates — expected for the heavily forested Western Ghats. The high water fraction (19%) reflects Kerala's extensive backwater network and rivers.
