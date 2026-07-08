@@ -116,15 +116,15 @@ Training: 4,728 landslide points (stratified by type: DF 60%, SS 37%, RF 3%) + 5
 
 | Metric | Kerala | Hong Kong |
 |---|---|---|
-| AUC-ROC (test set) | **0.921** | 0.880 |
-| AUC-ROC (5-fold CV) | **0.926 ± 0.006** | 0.874 ± 0.008 |
+| AUC-ROC (test set) | **0.921*** | 0.880 |
+| AUC-ROC (5-fold CV) | **0.926 ± 0.006*** | 0.874 ± 0.008 |
 | rTP / sensitivity | 93.2% | 94.2% |
 | rTN / specificity | 78.3% | 72.8% |
 | Overall accuracy | 85.6% | 83.4% |
 
-Kerala outperforms HK on all metrics except rTP (≈equal). This is consistent with Kerala's sharper topographic contrast (flat coastal plains vs steep Western Ghats escarpment) providing cleaner class separation than HK's more uniformly hilly terrain.
+\* **Read this figure together with the "Independent validation" section below, not on its own.** It is measured against territory-wide random negatives and is inflated by a terrain-contrast artifact — the honest, terrain-controlled comparison figure is **0.64–0.68**, not 0.921. Sensitivity/specificity/accuracy above inherit the same inflation and should be read with the same caveat.
 
-**Feature importance (permutation, AUC-based):**
+**Feature importance (permutation, AUC-based, territory-wide negatives):**
 
 | Feature | Importance |
 |---|---|
@@ -133,11 +133,43 @@ Kerala outperforms HK on all metrics except rTP (≈equal). This is consistent w
 | Elevation | 0.0829 |
 | Aspect | 0.0014 |
 
-Slope and land cover are nearly equal in importance — the role of land cover (forest clearance, agricultural conversion) as a co-driver alongside slope is a known characteristic of Kerala landslides and is consistent with the 2018 disaster literature.
+This ranking is superseded by the terrain-matched importance below — slope's apparent dominance here does not survive terrain control.
+
+### Independent validation: territory-wide vs. terrain-matched negatives
+
+Dr. Nandan's independent review flagged that the 0.921 AUC above is measured against **territory-wide** negatives — non-landslide points sampled at random across all of Kerala — while the 4,728 positives sit almost entirely in the steep, high-elevation Western Ghats (slope median 27.7°, elevation median 750m vs. 4.0°/304m for the random negatives). A model can score well here partly by learning "is this Ghats-type terrain at all" rather than "is this particular slope unstable" — a shortcut with no operational value, since a susceptibility map is only useful *within* the terrain that's already known to be landslide-prone.
+
+Two scripts in this repo independently reproduce his check rather than taking the reported numbers on trust:
+
+- `run_terrain_match.py` — regenerates the point dataset, confirms the baseline AUC and a spatial-block-CV control, then builds terrain-matched negatives (binned by slope × elevation octile, drawn from a 150k territory-wide candidate pool) so "stable" comparison points share the same terrain profile as the landslide points.
+- `nbins_sweep.py` — repeats the matching at N_BINS = 4/8/16/24/32 to test whether AUC keeps falling as the match tightens, or plateaus. Raw results: `results/nbins_sweep_results.csv`.
+
+| Check | AUC (point) | AUC (5-fold CV) | Reference (Nandan) |
+|---|---|---|---|
+| Territory-wide negatives (headline) | 0.929 | 0.927 ± 0.003 | 0.921 |
+| Spatial-block CV (10km blocks) | — | 0.925 ± 0.013 | 0.923 |
+| Terrain-matched, N_BINS=8 | 0.678 | 0.668 ± 0.011 | 0.63 |
+| Terrain-matched, N_BINS=24 (plateau) | 0.654 | 0.637 ± 0.004 | 0.63 |
+| Terrain-matched, elevation dropped | 0.665 | — | 0.619 |
+
+Spatial-block CV essentially matching random CV (0.925 vs. 0.927) rules out spatial autocorrelation as an alternative explanation for the headline number. The N_BINS sweep shows CV AUC declining steeply from 0.708 (N_BINS=4) through 0.643 (N_BINS=16), then flattening at ~0.637 for N_BINS ≥ 24 — a genuine convergence rather than a one-off bin choice, and close enough to Nandan's 0.63 to sit within the same ~0.01 reproduction noise seen when reproducing his territory-wide numbers (0.929 vs. 0.921, 0.925 vs. 0.923, 0.927 vs. 0.918). At every N_BINS tested through 32, every occupied positive terrain bin matched to at least one real candidate — no common-support gap in this dataset.
+
+**Feature importance on the terrain-matched problem** overturns the territory-wide ranking:
+
+| Feature | Territory-wide importance (rank) | Terrain-matched importance (rank) |
+|---|---|---|
+| Slope | 0.0924 (1st) | 0.024 (4th, last) |
+| Land cover | 0.0902 (2nd) | 0.084 (1st) |
+| Elevation | 0.0829 (3rd) | 0.036 (3rd) |
+| Aspect | 0.0014 (4th, last) | 0.060 (2nd) |
+
+Once terrain is controlled for, slope's apparent importance almost entirely disappears — it was acting as a coast-vs-Ghats proxy even more strongly than elevation was. Land cover and aspect, both far down the original ranking, do most of the real discriminating once that coarse terrain-type shortcut is closed off. This is a different and sharper finding than "elevation is a proxy" and was not part of Nandan's original report.
+
+**What this means for the deployed susceptibility map below:** it was generated using the original territory-wide model. Its zone classification still correlates spatially with the districts hit hardest in the 2018 disaster (see below) — a genuine qualitative signal — but the underlying pixel probabilities likely overstate the risk contrast between Ghats and non-Ghats terrain more than they discriminate risk *within* the Ghats, which is exactly the zone where a susceptibility map needs to be most informative. Re-running the deployed map on a terrain-matched or otherwise rebalanced training set is the natural next step and has not yet been done.
 
 ### Susceptibility map statistics (full Kerala)
 
-Map generated via manual numpy RBF + Platt sigmoid (bypasses sklearn `predict_proba` which is prohibitively slow at ~200M pixel scale; mathematically identical result). Runtime: ~26 minutes on labws2.
+Map generated via manual numpy RBF + Platt sigmoid (bypasses sklearn `predict_proba` which is prohibitively slow at ~200M pixel scale; mathematically identical result). Runtime: ~26 minutes on labws2. Generated from the original (territory-wide) model — see caveat above.
 
 | Statistic | Value |
 |---|---|
@@ -161,12 +193,14 @@ Thresholds: Low <0.20 / Moderate 0.20–0.50 / High 0.50–0.80 / Very High >0.8
 | High (0.50–0.80) | 8,691,028 | 6.9% | Mid-elevation Western Ghats slopes |
 | Very High (>0.80) | 21,264,026 | 17.0% | Steep upper Ghats — Idukki, Wayanad, Pathanamthitta |
 
-The 17% Very High zone corresponds spatially to the districts that suffered the most severe landslide impacts during the 2018 Kerala floods, providing qualitative validation of the map.
+The 17% Very High zone corresponds spatially to the districts that suffered the most severe landslide impacts during the 2018 Kerala floods, providing qualitative validation of the map. Given the finding above, this correlation is best read as "the model correctly identifies Ghats-type terrain as elevated risk" rather than "the model discriminates fine-grained risk within the Ghats" — the latter is what the terrain-matched AUC (0.64–0.68) actually measures, and it is a substantially harder and more useful test.
 
 ## Known limitations (Kerala)
 
+- **Headline AUC (0.921) is inflated by a territory-wide vs. Ghats terrain-contrast artifact in negative sampling — see "Independent validation" above. The terrain-controlled figure is 0.64–0.68, not 0.921.** This is the most consequential limitation in this section and should not be read as one bullet among equals.
 - TWI absent — reduces model to 4 features; flow-accumulation effects on pore pressure not captured.
 - Nodata sentinel (-9999) from slope/aspect computation leaked into ~boundary pixels of training samples; minor effect on AUC, documented in notes.md.
 - No hyperparameter tuning performed (C=1.0, gamma='scale' defaults used).
 - Inventory points are occurrence locations, not areal polygons — point-based sampling may undersample large failure zones.
 - `susceptibility_kerala.tif` (510MB) excluded from repository due to GitHub file size limits; `susceptibility_classified_kerala.tif` (12MB) included as the primary deliverable.
+- Deployed susceptibility map (statistics above) was generated with the original, uncorrected model — not yet regenerated on a terrain-matched training set.
